@@ -1,12 +1,3 @@
-I've updated the Streamlit UI to include a microphone button for voice input inside the chat input box. The updated code ensures that:
-
-A mic button (🎙️) is placed next to the text input.
-Voice recognition is triggered when the mic button is clicked.
-The transcribed speech is automatically sent as a chat message.
-🚀 Updated Code with Voice Input Button
-python
-Copy
-Edit
 import os
 import torch
 import requests
@@ -157,31 +148,20 @@ for message in st.session_state.chat_history:
         st.write(message["content"])
 
 # 🎙️ **Voice Input Using JavaScript (Web Speech API)**
-st.write("🎙️ Click below to use voice input:")
-speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
-
-# Store speech input
-if speech_text:
-    st.session_state.chat_history.append({"role": "user", "content": speech_text})
-    try:
-        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
-        bot_response = response.json().get("response", "I didn't understand that.")
-    except requests.exceptions.RequestException as e:
-        bot_response = f"⚠️ Error: {str(e)}"
-
-    st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
-    with st.chat_message("assistant"):
-        st.write(bot_response)
-
-# Chat Input with Mic Button
+st.write("🎙️ Click the mic button to use voice input:")
 col1, col2 = st.columns([8, 1])
+
 with col1:
-    user_input = st.text_input("💬 Type your message here...", key="chat_input")
+    user_input = st.chat_input("💬 Type your message here...")
 
 with col2:
-    if st.button("🎙️", key="mic_button"):
-        st.session_state.chat_history.append({"role": "user", "content": speech_text})
+    mic_clicked = st.button("🎙️", key="mic_button")
 
+if mic_clicked:
+    speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
+    
+    if speech_text:
+        st.session_state.chat_history.append({"role": "user", "content": speech_text})
         try:
             response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
             bot_response = response.json().get("response", "I didn't understand that.")
@@ -191,6 +171,18 @@ with col2:
         st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
         with st.chat_message("assistant"):
             st.write(bot_response)
+
+if user_input:
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
+    try:
+        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": user_input}, timeout=10)
+        bot_response = response.json().get("response", "I didn't understand that.")
+    except requests.exceptions.RequestException as e:
+        bot_response = f"⚠️ Error: {str(e)}"
+
+    st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+    with st.chat_message("assistant"):
+        st.write(bot_response)
 
 # Start FastAPI inside Streamlit
 def run_fastapi():
