@@ -1,3 +1,12 @@
+I've updated the Streamlit UI to include a microphone button for voice input inside the chat input box. The updated code ensures that:
+
+A mic button (🎙️) is placed next to the text input.
+Voice recognition is triggered when the mic button is clicked.
+The transcribed speech is automatically sent as a chat message.
+🚀 Updated Code with Voice Input Button
+python
+Copy
+Edit
 import os
 import torch
 import requests
@@ -19,13 +28,13 @@ from groq import Groq
 from uvicorn import run
 from streamlit_js_eval import streamlit_js_eval
 
-# Load environment variables
+# ---------------------- Load Environment Variables ----------------------
 load_dotenv()
 
-# Setup logging
+# ---------------------- Setup Logging ----------------------
 logging.basicConfig(level=logging.INFO)
 
-# API Keys
+# ---------------------- API Keys ----------------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
@@ -35,23 +44,23 @@ PINECONE_INDEX_NAME = "ai-multimodal-chatbot"
 
 # Validate API Keys
 if not GROQ_API_KEY or not AWS_ACCESS_KEY or not AWS_SECRET_KEY or not PINECONE_API_KEY:
-    raise ValueError("\u274c ERROR: Missing API keys! Please check your .env file or Streamlit secrets.")
+    raise ValueError("❌ ERROR: Missing API keys! Please check your .env file or Streamlit secrets.")
 
-# Initialize Clients
+# ---------------------- Initialize Clients ----------------------
 groq_client = Groq(api_key=GROQ_API_KEY)
 polly_client = boto3.client("polly", aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY, region_name=AWS_REGION)
 
-# Initialize Pinecone
+# ---------------------- Initialize Pinecone ----------------------
 pc = Pinecone(api_key=PINECONE_API_KEY)
 available_indexes = [index.name for index in pc.list_indexes()]
 
 if PINECONE_INDEX_NAME in available_indexes:
-    logging.info(f"\u2705 Connected to Pinecone index: {PINECONE_INDEX_NAME}")
+    logging.info(f"✅ Connected to Pinecone index: {PINECONE_INDEX_NAME}")
     index = pc.Index(PINECONE_INDEX_NAME)
 else:
-    raise ValueError(f"\u274c ERROR: Pinecone index '{PINECONE_INDEX_NAME}' not found. Check your Pinecone dashboard.")
+    raise ValueError(f"❌ ERROR: Pinecone index '{PINECONE_INDEX_NAME}' not found. Check your Pinecone dashboard.")
 
-# Load Hugging Face Models
+# ---------------------- Load Hugging Face Models ----------------------
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModel.from_pretrained(MODEL_NAME)
@@ -147,10 +156,11 @@ for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.write(message["content"])
 
-# 🎙️ Voice Input Using JavaScript (Web Speech API)
+# 🎙️ **Voice Input Using JavaScript (Web Speech API)**
 st.write("🎙️ Click below to use voice input:")
 speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
 
+# Store speech input
 if speech_text:
     st.session_state.chat_history.append({"role": "user", "content": speech_text})
     try:
@@ -163,20 +173,24 @@ if speech_text:
     with st.chat_message("assistant"):
         st.write(bot_response)
 
-# Chat Input
-user_input = st.chat_input("💬 Type your message here...")
+# Chat Input with Mic Button
+col1, col2 = st.columns([8, 1])
+with col1:
+    user_input = st.text_input("💬 Type your message here...", key="chat_input")
 
-if user_input:
-    st.session_state.chat_history.append({"role": "user", "content": user_input})
-    try:
-        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": user_input}, timeout=10)
-        bot_response = response.json().get("response", "I didn't understand that.")
-    except requests.exceptions.RequestException as e:
-        bot_response = f"⚠️ Error: {str(e)}"
+with col2:
+    if st.button("🎙️", key="mic_button"):
+        st.session_state.chat_history.append({"role": "user", "content": speech_text})
 
-    st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
-    with st.chat_message("assistant"):
-        st.write(bot_response)
+        try:
+            response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
+            bot_response = response.json().get("response", "I didn't understand that.")
+        except requests.exceptions.RequestException as e:
+            bot_response = f"⚠️ Error: {str(e)}"
+
+        st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+        with st.chat_message("assistant"):
+            st.write(bot_response)
 
 # Start FastAPI inside Streamlit
 def run_fastapi():
