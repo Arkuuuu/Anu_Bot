@@ -159,7 +159,7 @@ user_input = st.text_input("💬 Type your message here...", key="chat_input")
 if st.button("📤 Send", key="send_button", use_container_width=True):
     if user_input:
         st.session_state.chat_history.append({"role": "user", "content": user_input})
-        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": user_input})", json={"message": user_input})
+        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": user_input})
         bot_response = response.json().get("response", "I didn't understand that.")
         st.session_state.chat_history.append({"role": "bot", "content": bot_response})
         st.markdown(f"**🤖 Anu.AI:** {bot_response}")
