@@ -9,11 +9,9 @@ import threading
 import pytesseract
 from fastapi import FastAPI, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from transformers import AutoTokenizer, AutoModel, AutoImageProcessor, ViTForImageClassification
+from transformers import AutoTokenizer, AutoModel
 from pinecone import Pinecone
 from dotenv import load_dotenv
-from PIL import Image
-from io import BytesIO
 from groq import Groq
 from uvicorn import run
 from streamlit_js_eval import streamlit_js_eval
@@ -116,11 +114,10 @@ async def chat(query: dict):
 st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
 
 # ---------------------- Clear Chat on Refresh ----------------------
-if "chat_history" in st.session_state:
-    del st.session_state["chat_history"]
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-st.session_state.chat_history = []  # Reset chat on page refresh
-
+# Display Chat Messages
 st.title("💬 Anu.AI Chat")
 
 for message in st.session_state.chat_history:
