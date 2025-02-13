@@ -2,7 +2,6 @@ import os
 import torch
 import requests
 import logging
-import asyncio
 import streamlit as st
 import numpy as np
 import boto3
@@ -121,6 +120,12 @@ async def chat(query: dict):
 # ---------------------- Streamlit UI ----------------------
 st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
 
+# ---------------------- Clear Chat on Refresh ----------------------
+if "chat_history" in st.session_state:
+    del st.session_state["chat_history"]
+
+st.session_state.chat_history = []  # Reset chat on page refresh
+
 # Sidebar for Quick Actions
 with st.sidebar:
     st.title("Settings")
@@ -130,15 +135,6 @@ with st.sidebar:
     st.button("💻 Help me write code")
     st.button("📖 Explain a concept")
     st.button("🎨 Generate ideas")
-
-# Fetch chat history from Pinecone
-def fetch_chat_history():
-    results = index.query(vector=get_embedding("recent chats"), top_k=10, include_metadata=True)
-    return [{"role": match["metadata"]["role"], "content": match["metadata"]["text"]} for match in results["matches"]]
-
-# Load chat history
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = fetch_chat_history()
 
 # Display Chat Messages
 st.title("💬 Anu.AI Chat")
