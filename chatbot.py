@@ -27,6 +27,7 @@ logging.basicConfig(level=logging.INFO)
 
 # API Keys
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+WHISPER_API_URL = "https://api.groq.com/audio/transcriptions"
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
@@ -35,7 +36,7 @@ PINECONE_INDEX_NAME = "ai-multimodal-chatbot"
 
 # Validate API Keys
 if not GROQ_API_KEY or not AWS_ACCESS_KEY or not AWS_SECRET_KEY or not PINECONE_API_KEY:
-    raise ValueError("❌ ERROR: Missing API keys! Please check your .env file or Streamlit secrets.")
+    raise ValueError("❌ ERROR: Missing API keys! Check your .env file or Streamlit secrets.")
 
 # Initialize Clients
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -46,8 +47,6 @@ app = FastAPI()
 
 # Initialize Pinecone
 pc = Pinecone(api_key=PINECONE_API_KEY)
-
-# Check if the Pinecone index exists before creating
 existing_indexes = [index_info['name'] for index_info in pc.list_indexes()]
 
 if PINECONE_INDEX_NAME not in existing_indexes:
@@ -69,83 +68,70 @@ vit_model_name = "google/vit-base-patch16-224"
 image_processor = AutoImageProcessor.from_pretrained(vit_model_name)
 vit_model = ViTForImageClassification.from_pretrained(vit_model_name)
 
+# -----------------------------------------------------------------FastAPI Backend---------------------------------------------------------------
+
+# Chat Function using Groq API
+@app.post("/chat/")
+async def chat(query: dict):
+    user_input = query.get("message", "")
+
+    # Call Groq API for response
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    payload = {"messages": [{"role": "user", "content": user_input}], "model": "llama-3.3-70b-versatile"}
+
+    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+    
+    if response.status_code == 200:
+        bot_response = response.json()["choices"][0]["message"]["content"]
+        return {"response": bot_response}
+    else:
+        return {"response": "⚠️ Error: Unable to connect to Groq API."}
+
+# Speech-to-Text (STT) using Whisper API
+@app.websocket("/stt/")
+async def websocket_stt(websocket: WebSocket):
+    await websocket.accept()
+    audio_buffer = bytearray()
+    
+    try:
+        while True:
+            audio_data = await websocket.receive_bytes()
+            audio_buffer.extend(audio_data)
+
+            if len(audio_buffer) > 16000:  
+                headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+                files = {"file": ("audio.wav", audio_buffer, "audio/wav")}
+                response = requests.post(WHISPER_API_URL, headers=headers, files=files)
+
+                if response.status_code == 200:
+                    transcription = response.json().get("text", "")
+                    await websocket.send_text(transcription)
+                else:
+                    await websocket.send_text("⚠️ Error: STT failed.")
+                audio_buffer.clear()
+    except WebSocketDisconnect:
+        logging.warning("STT WebSocket disconnected.")
+    finally:
+        await websocket.close()
+
+# Text-to-Speech (TTS) using AWS Polly
+@app.websocket("/tts/")
+async def websocket_tts(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            text_data = await websocket.receive_text()
+            response = polly_client.synthesize_speech(Text=text_data, OutputFormat="mp3", VoiceId="Joanna")
+            audio_stream = response["AudioStream"].read()
+            await websocket.send_bytes(audio_stream)
+    except WebSocketDisconnect:
+        logging.warning("TTS WebSocket disconnected.")
+    finally:
+        await websocket.close()
+
 # -----------------------------------------------------------------Streamlit UI---------------------------------------------------------------
+
 st.set_page_config(page_title="Anu.AI Chat", page_icon="🤖", layout="wide")
-
-# Custom CSS Styling for Dark Mode UI
-st.markdown("""
-    <style>
-        /* Background and Text */
-        body {
-            background-color: #1a1b26;
-            color: white;
-        }
-        .main {
-            background-color: #1a1b26;
-        }
-        
-        /* Chat UI */
-        .chat-container {
-            padding: 20px;
-        }
-        .chat-bubble {
-            padding: 10px 15px;
-            border-radius: 15px;
-            max-width: 60%;
-            display: inline-block;
-            margin-bottom: 10px;
-        }
-        .chat-user {
-            background-color: #2b6cb0;
-            color: white;
-            text-align: right;
-            margin-left: auto;
-        }
-        .chat-bot {
-            background-color: #1e293b;
-            color: white;
-            text-align: left;
-        }
-        
-        /* Input box */
-        .chat-input {
-            width: 90%;
-            padding: 10px;
-            border-radius: 10px;
-            border: none;
-            background: #2d2f3b;
-            color: white;
-        }
-
-        /* Sidebar Styling */
-        .sidebar {
-            background-color: #1a1b26;
-            padding: 15px;
-        }
-        .sidebar button {
-            width: 100%;
-            margin-bottom: 10px;
-            padding: 10px;
-            border-radius: 10px;
-            background: #2b6cb0;
-            color: white;
-            border: none;
-        }
-
-        /* Floating action buttons */
-        .action-btn {
-            background: #2b6cb0;
-            color: white;
-            border: none;
-            padding: 10px;
-            margin-right: 5px;
-            border-radius: 10px;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-# Chat Header
-st.markdown("<h2 style='text-align: center;'>🤖 Anu.AI Chat</h2>", unsafe_allow_html=True)
 
 # Sidebar for Quick Actions
 st.sidebar.markdown("## Settings")
@@ -161,15 +147,13 @@ st.sidebar.button("🎨 Generate ideas")
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [{"role": "bot", "content": "Hello! How can I assist you today? 😊"}]
 
-# Display Chat Messages with Styled Bubbles
+# Display Chat Messages
 for message in st.session_state.chat_history:
-    role_class = "chat-user" if message["role"] == "user" else "chat-bot"
-    st.markdown(f"<div class='chat-bubble {role_class}'>{message['content']}</div>", unsafe_allow_html=True)
+    role = "👤" if message["role"] == "user" else "🤖"
+    st.markdown(f"**{role} {message['role'].title()}**: {message['content']}")
 
-# Chat Input Box
-col1, col2 = st.columns([8, 1])
-with col1:
-    user_input = st.text_input("Type your message...", key="chat_input")
+# Chat Input
+user_input = st.text_input("💬 Type your message here...", key="chat_input")
 
 # Send Button
 if st.button("📤 Send", key="send_button", use_container_width=True):
@@ -178,19 +162,9 @@ if st.button("📤 Send", key="send_button", use_container_width=True):
         response = requests.post("http://localhost:8000/chat/", json={"message": user_input})
         bot_response = response.json().get("response", "I didn't understand that.")
         st.session_state.chat_history.append({"role": "bot", "content": bot_response})
-        st.markdown(f"<div class='chat-bubble chat-bot'>{bot_response}</div>", unsafe_allow_html=True)
-
-# Image Upload for OCR & Object Detection
-uploaded_file = st.file_uploader("📸 Upload an image for analysis", type=["jpg", "png"])
-if uploaded_file:
-    image_bytes = uploaded_file.getvalue()
-    response = requests.post("http://localhost:8000/analyze_image/", files={"file": image_bytes})
-    result = response.json()
-    st.image(uploaded_file, caption=f"🖼 Detected: {result['prediction']}", use_column_width=True)
-    st.markdown(f"📝 Extracted Text: `{result['extracted_text']}`")
+        st.markdown(f"**🤖 Anu.AI:** {bot_response}")
 
 # 🎙️ **Voice Input Using JavaScript (Web Speech API)**
-st.write("🎙️ Click below to use voice input:")
 speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
 
 if speech_text:
