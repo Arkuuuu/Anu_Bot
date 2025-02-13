@@ -120,11 +120,28 @@ async def chat(query: dict):
 # ---------------------- Streamlit UI ----------------------
 st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
 
-# ---------------------- Clear Chat on Refresh ----------------------
-if "chat_history" in st.session_state:
-    del st.session_state["chat_history"]
-
-st.session_state.chat_history = []  # Reset chat on page refresh
+# Inject CSS for Fixed Input Box at Bottom
+st.markdown("""
+    <style>
+        .stTextInput {
+            position: fixed;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 60%;
+            z-index: 999;
+            background-color: #262730;
+            padding: 10px;
+            border-radius: 8px;
+        }
+        .stButton {
+            position: fixed;
+            bottom: 10px;
+            right: 10%;
+            z-index: 999;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
 # Sidebar for Quick Actions
 with st.sidebar:
@@ -139,7 +156,7 @@ with st.sidebar:
 # Display Chat Messages
 st.title("💬 Anu.AI Chat")
 
-for message in st.session_state.chat_history:
+for message in st.session_state.get("chat_history", []):
     with st.chat_message(message["role"]):
         st.write(message["content"])
 
@@ -169,7 +186,7 @@ if st.session_state.mic_active:
     if not st.session_state.mic_active:
         if speech_text:
             st.session_state.chat_history.append({"role": "user", "content": speech_text})
-            st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  # NEW: Show "Analyzing..." while processing
+            st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  # Show "Analyzing..." while processing
             try:
                 response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
                 bot_response = response.json().get("response", "I didn't understand that.")
@@ -182,7 +199,7 @@ if st.session_state.mic_active:
 
 if user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
-    st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  # NEW: Show "Analyzing..." while processing
+    st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  # Show "Analyzing..." while processing
     try:
         response = requests.post("http://127.0.0.1:8000/chat/", json={"message": user_input}, timeout=10)
         bot_response = response.json().get("response", "I didn't understand that.")
