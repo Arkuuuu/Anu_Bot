@@ -8,7 +8,6 @@ import numpy as np
 import boto3
 import websocket
 import threading
-import sounddevice as sd
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile
 from transformers import AutoTokenizer, AutoModel, AutoImageProcessor, ViTForImageClassification
 from pinecone import Pinecone, ServerlessSpec
