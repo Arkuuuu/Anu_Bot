@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+streamlit
+requests
+torch
+transformers
+Pillow
+boto3
+python-dotenv
+pinecone-client
+beautifulsoup4
+langchain
+langchain-community
+groq
