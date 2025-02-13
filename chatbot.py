@@ -69,80 +69,116 @@ vit_model_name = "google/vit-base-patch16-224"
 image_processor = AutoImageProcessor.from_pretrained(vit_model_name)
 vit_model = ViTForImageClassification.from_pretrained(vit_model_name)
 
-# Function to Generate Embeddings
-def get_embedding(text):
-    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-    with torch.no_grad():
-        outputs = model(**inputs)
-    embedding = outputs.last_hidden_state.mean(dim=1).squeeze()
-    return embedding.tolist()
-
-# OCR Function for Text Extraction from Images
-def extract_text_from_image(image):
-    text = pytesseract.image_to_string(image)
-    return text.strip()
-
-# Function to Process Images
-@app.post("/analyze_image/")
-async def analyze_image(file: UploadFile):
-    image = Image.open(BytesIO(await file.read()))
-    inputs = image_processor(images=image, return_tensors="pt")
-    with torch.no_grad():
-        outputs = vit_model(**inputs)
-        predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
-        class_id = torch.argmax(predictions, dim=-1).item()
-    
-    extracted_text = extract_text_from_image(image)
-
-    return {
-        "prediction": vit_model.config.id2label[class_id],
-        "extracted_text": extracted_text
-    }
-
-# Text-to-Speech (TTS) WebSocket
-@app.websocket("/tts/")
-async def websocket_tts(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            text_data = await websocket.receive_text()
-            response = polly_client.synthesize_speech(Text=text_data, OutputFormat="mp3", VoiceId="Joanna")
-            audio_stream = response["AudioStream"].read()
-            await websocket.send_bytes(audio_stream)
-    except WebSocketDisconnect:
-        logging.warning("TTS WebSocket disconnected.")
-    finally:
-        await websocket.close()
-
 # -----------------------------------------------------------------Streamlit UI---------------------------------------------------------------
-st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
-st.markdown("<h1 class='center'>🤖 ANU.AI - Your Smart AI Assistant</h1>", unsafe_allow_html=True)
+st.set_page_config(page_title="Anu.AI Chat", page_icon="🤖", layout="wide")
+
+# Custom CSS Styling for Dark Mode UI
+st.markdown("""
+    <style>
+        /* Background and Text */
+        body {
+            background-color: #1a1b26;
+            color: white;
+        }
+        .main {
+            background-color: #1a1b26;
+        }
+        
+        /* Chat UI */
+        .chat-container {
+            padding: 20px;
+        }
+        .chat-bubble {
+            padding: 10px 15px;
+            border-radius: 15px;
+            max-width: 60%;
+            display: inline-block;
+            margin-bottom: 10px;
+        }
+        .chat-user {
+            background-color: #2b6cb0;
+            color: white;
+            text-align: right;
+            margin-left: auto;
+        }
+        .chat-bot {
+            background-color: #1e293b;
+            color: white;
+            text-align: left;
+        }
+        
+        /* Input box */
+        .chat-input {
+            width: 90%;
+            padding: 10px;
+            border-radius: 10px;
+            border: none;
+            background: #2d2f3b;
+            color: white;
+        }
+
+        /* Sidebar Styling */
+        .sidebar {
+            background-color: #1a1b26;
+            padding: 15px;
+        }
+        .sidebar button {
+            width: 100%;
+            margin-bottom: 10px;
+            padding: 10px;
+            border-radius: 10px;
+            background: #2b6cb0;
+            color: white;
+            border: none;
+        }
+
+        /* Floating action buttons */
+        .action-btn {
+            background: #2b6cb0;
+            color: white;
+            border: none;
+            padding: 10px;
+            margin-right: 5px;
+            border-radius: 10px;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# Chat Header
+st.markdown("<h2 style='text-align: center;'>🤖 Anu.AI Chat</h2>", unsafe_allow_html=True)
+
+# Sidebar for Quick Actions
+st.sidebar.markdown("## Settings")
+st.sidebar.button("📥 Download Chat")
+st.sidebar.button("🔗 Share Chat")
+
+st.sidebar.markdown("## Quick Actions")
+st.sidebar.button("💻 Help me write code")
+st.sidebar.button("📖 Explain a concept")
+st.sidebar.button("🎨 Generate ideas")
 
 # Chat History
 if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+    st.session_state.chat_history = [{"role": "bot", "content": "Hello! How can I assist you today? 😊"}]
 
-# Display Chat Messages
+# Display Chat Messages with Styled Bubbles
 for message in st.session_state.chat_history:
-    role = "👤" if message["role"] == "user" else "🤖"
-    st.markdown(f"**{role} {message['role'].title()}**: {message['content']}")
+    role_class = "chat-user" if message["role"] == "user" else "chat-bot"
+    st.markdown(f"<div class='chat-bubble {role_class}'>{message['content']}</div>", unsafe_allow_html=True)
 
-# 🎙️ **Voice Input Using JavaScript (Web Speech API)**
-st.write("🎙️ Click below to use voice input:")
+# Chat Input Box
+col1, col2 = st.columns([8, 1])
+with col1:
+    user_input = st.text_input("Type your message...", key="chat_input")
 
-speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
-
-if speech_text:
-    st.text_input("You said:", speech_text, key="user_input")
-    st.session_state.chat_history.append({"role": "user", "content": speech_text})
-
-    # Send to chatbot backend
-    response = requests.post("http://localhost:8000/chat/", json={"message": speech_text})
-    bot_response = response.json().get("response", "I didn't understand that.")
-
-    # Display bot response
-    st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
-    st.markdown(f"**🤖 ANU.AI:** {bot_response}")
+# Send Button
+if st.button("📤 Send", key="send_button", use_container_width=True):
+    if user_input:
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        response = requests.post("http://localhost:8000/chat/", json={"message": user_input})
+        bot_response = response.json().get("response", "I didn't understand that.")
+        st.session_state.chat_history.append({"role": "bot", "content": bot_response})
+        st.markdown(f"<div class='chat-bubble chat-bot'>{bot_response}</div>", unsafe_allow_html=True)
 
 # Image Upload for OCR & Object Detection
 uploaded_file = st.file_uploader("📸 Upload an image for analysis", type=["jpg", "png"])
@@ -150,22 +186,13 @@ if uploaded_file:
     image_bytes = uploaded_file.getvalue()
     response = requests.post("http://localhost:8000/analyze_image/", files={"file": image_bytes})
     result = response.json()
-    st.image(uploaded_file, caption=f"Detected: {result['prediction']}", use_column_width=True)
+    st.image(uploaded_file, caption=f"🖼 Detected: {result['prediction']}", use_column_width=True)
     st.markdown(f"📝 Extracted Text: `{result['extracted_text']}`")
 
-# Chat Input with Emoji Support
-user_input = st.text_input("💬 Type your message here...", key="chat_input")
+# 🎙️ **Voice Input Using JavaScript (Web Speech API)**
+st.write("🎙️ Click below to use voice input:")
+speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
 
-emojis = ["😊", "👍", "🎉", "🤔", "💡", "✨", "🚀", "💪"]
-selected_emoji = st.radio("Pick an emoji to react", emojis, horizontal=True)
-if selected_emoji:
-    st.session_state.chat_history.append({"role": "user", "content": selected_emoji})
-
-# Send Button
-if st.button("Send", key="send_button", use_container_width=True):
-    if user_input:
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
-        response = requests.post("http://localhost:8000/chat/", json={"message": user_input})
-        bot_response = response.json().get("response", "I didn't understand that.")
-        st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
-        st.markdown(f"**🤖 ANU.AI:** {bot_response}")
+if speech_text:
+    st.text_input("You said:", speech_text, key="user_speech")
+    st.session_state.chat_history.append({"role": "user", "content": speech_text})
