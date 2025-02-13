@@ -50,11 +50,12 @@ pc = Pinecone(api_key=PINECONE_API_KEY)
 # Initialize Pinecone
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
-# Check if the Pinecone index exists before using it
-if PINECONE_INDEX_NAME in pc.list_indexes():
+# Check if the index exists
+if PINECONE_INDEX_NAME in available_indexes:
     logging.info(f"✅ Connected to Pinecone index: {PINECONE_INDEX_NAME}")
-    index = pc.Index(PINECONE_INDEX_NAME)
+    index = pc.Index(PINECONE_INDEX_NAME, host=f"{PINECONE_INDEX_NAME}-{AWS_REGION}.pinecone.io")
 else:
+    logging.error(f"❌ Pinecone index '{PINECONE_INDEX_NAME}' not found! Available indexes: {available_indexes}")
     raise ValueError(f"❌ ERROR: Pinecone index '{PINECONE_INDEX_NAME}' not found. Check your Pinecone dashboard.")
 
 
