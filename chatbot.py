@@ -33,6 +33,10 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 PINECONE_INDEX_NAME = "ai-multimodal-chatbot"
 
+# Validate API Keys
+if not GROQ_API_KEY or not AWS_ACCESS_KEY or not AWS_SECRET_KEY or not PINECONE_API_KEY:
+    raise ValueError("❌ ERROR: Missing API keys! Please check your .env file or Streamlit secrets.")
+
 # Initialize Clients
 groq_client = Groq(api_key=GROQ_API_KEY)
 polly_client = boto3.client("polly", aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY, region_name=AWS_REGION)
@@ -42,8 +46,17 @@ app = FastAPI()
 
 # Initialize Pinecone
 pc = Pinecone(api_key=PINECONE_API_KEY)
-if PINECONE_INDEX_NAME not in pc.list_indexes():
+
+# Check if the Pinecone index exists before creating
+existing_indexes = [index_info['name'] for index_info in pc.list_indexes()]
+
+if PINECONE_INDEX_NAME not in existing_indexes:
+    logging.info(f"Creating Pinecone index: {PINECONE_INDEX_NAME}")
     pc.create_index(name=PINECONE_INDEX_NAME, dimension=384, metric="cosine", spec=ServerlessSpec(cloud="aws", region="us-east-1"))
+    logging.info(f"✅ Pinecone index '{PINECONE_INDEX_NAME}' created successfully!")
+else:
+    logging.info(f"✅ Pinecone index '{PINECONE_INDEX_NAME}' already exists.")
+
 index = pc.Index(PINECONE_INDEX_NAME)
 
 # Load Hugging Face Models
