@@ -50,6 +50,9 @@ pc = Pinecone(api_key=PINECONE_API_KEY)
 # Initialize Pinecone
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
+# Get the list of available indexes and ensure it's a list
+available_indexes = [index.name for index in pc.list_indexes()]  # Fix: Convert to list
+
 # Check if the index exists
 if PINECONE_INDEX_NAME in available_indexes:
     logging.info(f"✅ Connected to Pinecone index: {PINECONE_INDEX_NAME}")
@@ -57,7 +60,6 @@ if PINECONE_INDEX_NAME in available_indexes:
 else:
     logging.error(f"❌ Pinecone index '{PINECONE_INDEX_NAME}' not found! Available indexes: {available_indexes}")
     raise ValueError(f"❌ ERROR: Pinecone index '{PINECONE_INDEX_NAME}' not found. Check your Pinecone dashboard.")
-
 
 # Load Hugging Face Models
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
