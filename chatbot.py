@@ -6,18 +6,18 @@ import asyncio
 import streamlit as st
 import numpy as np
 import boto3
-import websocket
 import threading
 import pytesseract
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile
+from fastapi import FastAPI, WebSocket, UploadFile
 from transformers import AutoTokenizer, AutoModel, AutoImageProcessor, ViTForImageClassification
-from pinecone import Pinecone, ServerlessSpec
 from dotenv import load_dotenv
 from PIL import Image
 from io import BytesIO
 from groq import Groq
 from time import sleep
 from streamlit_js_eval import streamlit_js_eval
+import uvicorn
+from threading import Thread
 
 # Load environment variables
 load_dotenv()
@@ -29,77 +29,38 @@ logging.basicConfig(level=logging.INFO)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-PINECONE_INDEX_NAME = "ai-multimodal-chatbot"
 
 # Validate API Keys
-if not GROQ_API_KEY or not AWS_ACCESS_KEY or not AWS_SECRET_KEY or not PINECONE_API_KEY:
+if not GROQ_API_KEY or not AWS_ACCESS_KEY or not AWS_SECRET_KEY:
     raise ValueError("❌ ERROR: Missing API keys! Please check your .env file or Streamlit secrets.")
 
 # Initialize Clients
 groq_client = Groq(api_key=GROQ_API_KEY)
-polly_client = boto3.client("polly", aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY, region_name=AWS_REGION)
+polly_client = boto3.client("polly", aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY)
 
-# Initialize FastAPI
+# ------------------ ✅ FastAPI Backend ------------------
 app = FastAPI()
 
-# Initialize Pinecone
-pc = Pinecone(api_key=PINECONE_API_KEY)
+# Chat API Endpoint
+@app.post("/chat/")
+async def chat(query: dict):
+    user_input = query.get("message", "")
 
-# Initialize Pinecone
-pc = Pinecone(api_key=PINECONE_API_KEY)
+    chat_completion = groq_client.chat.completions.create(
+        messages=[{"role": "system", "content": "You are an AI assistant."},
+                  {"role": "user", "content": user_input}],
+        model="llama-3.3-70b-versatile"
+    )
 
-# Get the list of available indexes and ensure it's a list
-available_indexes = [index.name for index in pc.list_indexes()]  # Fix: Convert to list
+    response = chat_completion.choices[0].message.content
+    return {"response": response}
 
-# Check if the index exists
-if PINECONE_INDEX_NAME in available_indexes:
-    logging.info(f"✅ Connected to Pinecone index: {PINECONE_INDEX_NAME}")
-    index = pc.Index(PINECONE_INDEX_NAME, host=f"{PINECONE_INDEX_NAME}-{AWS_REGION}.pinecone.io")
-else:
-    logging.error(f"❌ Pinecone index '{PINECONE_INDEX_NAME}' not found! Available indexes: {available_indexes}")
-    raise ValueError(f"❌ ERROR: Pinecone index '{PINECONE_INDEX_NAME}' not found. Check your Pinecone dashboard.")
-
-# Load Hugging Face Models
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModel.from_pretrained(MODEL_NAME)
-
-# Updated ViT Model for Image Processing
-vit_model_name = "google/vit-base-patch16-224"
-image_processor = AutoImageProcessor.from_pretrained(vit_model_name)
-vit_model = ViTForImageClassification.from_pretrained(vit_model_name)
-
-# Function to Generate Embeddings
-def get_embedding(text):
-    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-    with torch.no_grad():
-        outputs = model(**inputs)
-    embedding = outputs.last_hidden_state.mean(dim=1).squeeze()
-    return embedding.tolist()
-
-# OCR Function for Text Extraction from Images
-def extract_text_from_image(image):
-    text = pytesseract.image_to_string(image)
-    return text.strip()
-
-# Function to Process Images
+# Image Processing Endpoint
 @app.post("/analyze_image/")
 async def analyze_image(file: UploadFile):
     image = Image.open(BytesIO(await file.read()))
-    inputs = image_processor(images=image, return_tensors="pt")
-    with torch.no_grad():
-        outputs = vit_model(**inputs)
-        predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
-        class_id = torch.argmax(predictions, dim=-1).item()
-    
-    extracted_text = extract_text_from_image(image)
-
-    return {
-        "prediction": vit_model.config.id2label[class_id],
-        "extracted_text": extracted_text
-    }
+    extracted_text = pytesseract.image_to_string(image)
+    return {"extracted_text": extracted_text}
 
 # Text-to-Speech (TTS) WebSocket
 @app.websocket("/tts/")
@@ -111,25 +72,62 @@ async def websocket_tts(websocket: WebSocket):
             response = polly_client.synthesize_speech(Text=text_data, OutputFormat="mp3", VoiceId="Joanna")
             audio_stream = response["AudioStream"].read()
             await websocket.send_bytes(audio_stream)
-    except WebSocketDisconnect:
+    except:
         logging.warning("TTS WebSocket disconnected.")
     finally:
         await websocket.close()
 
-# -----------------------------------------------------------------Streamlit UI---------------------------------------------------------------
+# Start FastAPI inside Streamlit
+def start_fastapi():
+    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+Thread(target=start_fastapi, daemon=True).start()
+
+# ------------------ ✅ Streamlit UI ------------------
 st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
+
+# Custom CSS Styling for Dark Mode UI
+st.markdown("""
+    <style>
+        body { background-color: #1a1b26; color: white; }
+        .main { background-color: #1a1b26; }
+        .chat-container { padding: 20px; }
+        .chat-bubble {
+            padding: 10px 15px;
+            border-radius: 15px;
+            max-width: 60%;
+            display: inline-block;
+            margin-bottom: 10px;
+        }
+        .chat-user { background-color: #2b6cb0; color: white; text-align: right; margin-left: auto; }
+        .chat-bot { background-color: #1e293b; color: white; text-align: left; }
+        .chat-input { width: 90%; padding: 10px; border-radius: 10px; border: none; background: #2d2f3b; color: white; }
+        .sidebar { background-color: #1a1b26; padding: 15px; }
+        .sidebar button { width: 100%; margin-bottom: 10px; padding: 10px; border-radius: 10px; background: #2b6cb0; color: white; border: none; }
+        .action-btn { background: #2b6cb0; color: white; border: none; padding: 10px; margin-right: 5px; border-radius: 10px; }
+    </style>
+""", unsafe_allow_html=True)
 
 # Chat Header
 st.markdown("<h1 style='text-align: center;'>🤖 ANU.AI - Your Smart AI Assistant</h1>", unsafe_allow_html=True)
 
+# Sidebar for Quick Actions
+st.sidebar.markdown("## Settings")
+st.sidebar.button("📥 Download Chat")
+st.sidebar.button("🔗 Share Chat")
+st.sidebar.markdown("## Quick Actions")
+st.sidebar.button("💻 Help me write code")
+st.sidebar.button("📖 Explain a concept")
+st.sidebar.button("🎨 Generate ideas")
+
 # Chat History
 if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+    st.session_state.chat_history = [{"role": "bot", "content": "Hello! How can I assist you today? 😊"}]
 
 # Display Chat Messages
 for message in st.session_state.chat_history:
-    role = "👤" if message["role"] == "user" else "🤖"
-    st.markdown(f"**{role} {message['role'].title()}**: {message['content']}")
+    role_class = "chat-user" if message["role"] == "user" else "chat-bot"
+    st.markdown(f"<div class='chat-bubble {role_class}'>{message['content']}</div>", unsafe_allow_html=True)
 
 # 🎙️ Voice Input Using JavaScript (Web Speech API)
 st.write("🎙️ Click below to use voice input:")
