@@ -61,7 +61,7 @@ vit_model_name = "google/vit-base-patch16-224"
 image_processor = AutoImageProcessor.from_pretrained(vit_model_name)
 vit_model = ViTForImageClassification.from_pretrained(vit_model_name)
 
-# ------------------------- FastAPI Backend -------------------------
+# ---------------------- FastAPI Backend ----------------------
 app = FastAPI()
 
 # Enable CORS for frontend-backend interaction
@@ -85,14 +85,21 @@ def get_embedding(text):
 def get_past_conversations(user_query):
     query_embedding = get_embedding(user_query)
     results = index.query(vector=query_embedding, top_k=5, include_metadata=True)
-    past_conversations = [match["metadata"]["text"] for match in results["matches"]]
+
+    past_conversations = []
+    for match in results["matches"]:
+        past_conversations.append(match["metadata"]["text"])
+
     return "\n".join(past_conversations)
 
 @app.post("/chat/")
 async def chat(query: dict):
     user_input = query.get("message", "")
+
+    # Retrieve past chats from Pinecone
     past_chats = get_past_conversations(user_input)
 
+    # Get AI response
     chat_completion = groq_client.chat.completions.create(
         messages=[
             {"role": "system", "content": "You are an AI assistant."},
@@ -103,6 +110,7 @@ async def chat(query: dict):
 
     response = chat_completion.choices[0].message.content
 
+    # Store both in Pinecone
     index.upsert(vectors=[
         {"id": f"user-{hash(user_input)}", "values": get_embedding(user_input), "metadata": {"text": user_input, "role": "user"}},
         {"id": f"bot-{hash(response)}", "values": get_embedding(response), "metadata": {"text": response, "role": "bot"}}
@@ -110,39 +118,69 @@ async def chat(query: dict):
 
     return {"response": response}
 
-# ------------------------- Streamlit UI -------------------------
-st.set_page_config(page_title="Anu.AI Chat", page_icon="🤖", layout="wide")
+# ---------------------- Streamlit UI ----------------------
+st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
 
-st.markdown("""
-    <style>
-        body { background-color: #0F172A; color: white; }
-        .stTextInput>div>div>input { background: #1E293B; color: white; }
-        .stButton>button { background: #2563EB; color: white; border-radius: 5px; }
-        .chat-bubble { padding: 10px; border-radius: 10px; max-width: 60%; }
-        .chat-user { background: #2563EB; color: white; text-align: right; }
-        .chat-bot { background: #1E293B; color: white; text-align: left; }
-    </style>
-""", unsafe_allow_html=True)
+# Sidebar for Quick Actions
+with st.sidebar:
+    st.title("Settings")
+    st.button("📥 Download Chat")
+    st.button("🔗 Share Chat")
+    st.subheader("Quick Actions")
+    st.button("💻 Help me write code")
+    st.button("📖 Explain a concept")
+    st.button("🎨 Generate ideas")
 
-st.markdown("<h2 style='text-align: center;'>🤖 Anu.AI Chat</h2>", unsafe_allow_html=True)
+# Fetch chat history from Pinecone
+def fetch_chat_history():
+    results = index.query(vector=get_embedding("recent chats"), top_k=10, include_metadata=True)
+    return [{"role": match["metadata"]["role"], "content": match["metadata"]["text"]} for match in results["matches"]]
 
+# Load chat history
 if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+    st.session_state.chat_history = fetch_chat_history()
+
+# Display Chat Messages
+st.title("💬 Anu.AI Chat")
 
 for message in st.session_state.chat_history:
-    role_class = "chat-user" if message["role"] == "user" else "chat-bot"
-    st.markdown(f"<div class='chat-bubble {role_class}'>{message['content']}</div>", unsafe_allow_html=True)
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
 
-user_input = st.text_input("💬 Type your message here...", key="chat_input")
-if st.button("📤 Send"):
-    if user_input:
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
-        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": user_input})
+# 🎙️ Voice Input Using JavaScript (Web Speech API)
+st.write("🎙️ Click below to use voice input:")
+speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
+
+if speech_text:
+    st.session_state.chat_history.append({"role": "user", "content": speech_text})
+    try:
+        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
         bot_response = response.json().get("response", "I didn't understand that.")
-        st.session_state.chat_history.append({"role": "bot", "content": bot_response})
-        st.markdown(f"<div class='chat-bubble chat-bot'>{bot_response}</div>", unsafe_allow_html=True)
+    except requests.exceptions.RequestException as e:
+        bot_response = f"⚠️ Error: {str(e)}"
 
+    st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+    with st.chat_message("assistant"):
+        st.write(bot_response)
+
+# Chat Input
+user_input = st.chat_input("💬 Type your message here...")
+
+if user_input:
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
+    try:
+        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": user_input}, timeout=10)
+        bot_response = response.json().get("response", "I didn't understand that.")
+    except requests.exceptions.RequestException as e:
+        bot_response = f"⚠️ Error: {str(e)}"
+
+    st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+    with st.chat_message("assistant"):
+        st.write(bot_response)
+
+# Start FastAPI inside Streamlit
 def run_fastapi():
     run(app, host="0.0.0.0", port=8000, log_level="info")
 
+# Run FastAPI in a separate thread
 threading.Thread(target=run_fastapi, daemon=True).start()
