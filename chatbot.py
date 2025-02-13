@@ -47,12 +47,13 @@ app = FastAPI()
 # Initialize Pinecone
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
-# Directly connect to the existing index
-index = pc.Index(PINECONE_INDEX_NAME)
+# Initialize Pinecone
+pc = Pinecone(api_key=PINECONE_API_KEY)
 
-# Verify the connection to Pinecone
+# Check if the Pinecone index exists before using it
 if PINECONE_INDEX_NAME in pc.list_indexes():
-    logging.info(f"✅ Connected to existing Pinecone index: {PINECONE_INDEX_NAME}")
+    logging.info(f"✅ Connected to Pinecone index: {PINECONE_INDEX_NAME}")
+    index = pc.Index(PINECONE_INDEX_NAME)
 else:
     raise ValueError(f"❌ ERROR: Pinecone index '{PINECONE_INDEX_NAME}' not found. Check your Pinecone dashboard.")
 
