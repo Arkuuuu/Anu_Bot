@@ -7,9 +7,9 @@ import numpy as np
 import boto3
 import threading
 import pytesseract
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile
+from fastapi import FastAPI, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from transformers import AutoTokenizer, AutoModel, AutoImageProcessor, ViTForImageClassification
+from transformers import AutoTokenizer, AutoModel
 from pinecone import Pinecone
 from dotenv import load_dotenv
 from PIL import Image
@@ -55,11 +55,6 @@ MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModel.from_pretrained(MODEL_NAME)
 
-# Updated ViT Model for Image Processing
-vit_model_name = "google/vit-base-patch16-224"
-image_processor = AutoImageProcessor.from_pretrained(vit_model_name)
-vit_model = ViTForImageClassification.from_pretrained(vit_model_name)
-
 # ---------------------- FastAPI Backend ----------------------
 app = FastAPI()
 
@@ -72,80 +67,69 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Function to Generate Embeddings
-def get_embedding(text):
-    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-    with torch.no_grad():
-        outputs = model(**inputs)
-    embedding = outputs.last_hidden_state.mean(dim=1).squeeze()
-    return embedding.tolist()
-
-# Store and Retrieve Chat History from Pinecone
-def get_past_conversations(user_query):
-    query_embedding = get_embedding(user_query)
-    results = index.query(vector=query_embedding, top_k=5, include_metadata=True)
-
-    past_conversations = []
-    for match in results["matches"]:
-        past_conversations.append(match["metadata"]["text"])
-
-    return "\n".join(past_conversations)
-
 @app.post("/chat/")
 async def chat(query: dict):
     user_input = query.get("message", "")
 
-    # Retrieve past chats from Pinecone
-    past_chats = get_past_conversations(user_input)
-
     # Get AI response
     chat_completion = groq_client.chat.completions.create(
-        messages=[
-            {"role": "system", "content": "You are an AI assistant."},
-            {"role": "user", "content": f"Previous Context:\n{past_chats}\nUser: {user_input}"}
-        ],
+        messages=[{"role": "system", "content": "You are an AI assistant."}, {"role": "user", "content": user_input}],
         model="llama-3.3-70b-versatile"
     )
-
+    
     response = chat_completion.choices[0].message.content
-
-    # Store both in Pinecone
-    index.upsert(vectors=[
-        {"id": f"user-{hash(user_input)}", "values": get_embedding(user_input), "metadata": {"text": user_input, "role": "user"}},
-        {"id": f"bot-{hash(response)}", "values": get_embedding(response), "metadata": {"text": response, "role": "bot"}}
-    ])
-
     return {"response": response}
 
 # ---------------------- Streamlit UI ----------------------
 st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
 
-# Inject CSS for Fixed Input Box at Bottom
+# ---------------------- Inject Custom CSS ----------------------
 st.markdown("""
     <style>
-        .fixed-input-container {
+        /* Dark Mode Theme */
+        body { background-color: #0d1117; color: white; }
+        .main { background-color: #0d1117; }
+        
+        /* Chat Input Bar at Bottom */
+        .chat-container {
             position: fixed;
             bottom: 0;
             left: 0;
             width: 100%;
-            background: #1a1b26;
+            background: #161b22;
             padding: 10px;
-            z-index: 999;
             display: flex;
             align-items: center;
             justify-content: center;
         }
-        .stTextInput {
+        .chat-input {
             flex: 1;
-            margin-right: 10px;
+            padding: 10px;
+            border-radius: 10px;
+            background: #21262d;
+            color: white;
+            border: none;
+            outline: none;
+            font-size: 16px;
         }
-        .stButton {
-            min-width: 50px;
+        .chat-btn {
+            width: 40px;
+            height: 40px;
+            margin-left: 8px;
+            border-radius: 50%;
+            background: #30363d;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .chat-btn:hover {
+            background: #484f58;
         }
     </style>
 """, unsafe_allow_html=True)
 
-# Sidebar for Quick Actions
+# ---------------------- Sidebar for Settings ----------------------
 with st.sidebar:
     st.title("Settings")
     st.button("📥 Download Chat")
@@ -155,37 +139,41 @@ with st.sidebar:
     st.button("📖 Explain a concept")
     st.button("🎨 Generate ideas")
 
-# Display Chat Messages
+# ---------------------- Chat Messages ----------------------
 st.title("💬 Anu.AI Chat")
 
-for message in st.session_state.get("chat_history", []):
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.write(message["content"])
 
-# 🎙️ **Toggle Voice Input with Mic Button**
-st.write("🎙️ Click the mic button to start/stop voice input:")
+# ---------------------- Chat Input and Buttons ----------------------
+col1, col2, col3, col4, col5 = st.columns([1, 8, 1, 1, 1])
 
-# Mic state toggle
-if "mic_active" not in st.session_state:
-    st.session_state.mic_active = False
+# 🎤 Mic Button
+with col1:
+    mic_clicked = st.button("🎙️")
 
-def toggle_mic():
-    st.session_state.mic_active = not st.session_state.mic_active
+# 📩 Input Box
+with col2:
+    user_input = st.text_input("Type your message...", key="chat_input", label_visibility="collapsed")
 
-# Fixed Input Bar
-with st.container():
-    st.markdown('<div class="fixed-input-container">', unsafe_allow_html=True)
-    col1, col2 = st.columns([8, 1])
+# 😃 Emoji Button
+with col3:
+    emoji_clicked = st.button("😊")
 
-    with col1:
-        user_input = st.chat_input("💬 Type your message here...")
+# 📎 Upload Button
+with col4:
+    upload_clicked = st.button("📎")
 
-    with col2:
-        mic_clicked = st.button("🎙️", key="mic_button", on_click=toggle_mic)
-    st.markdown('</div>', unsafe_allow_html=True)
+# 🚀 Send Button
+with col5:
+    send_clicked = st.button("📤")
 
-# If mic is active, start listening
-if st.session_state.mic_active:
+# ---------------------- Voice Input Handling ----------------------
+if mic_clicked:
     speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
     
     if speech_text:
@@ -198,9 +186,19 @@ if st.session_state.mic_active:
         with st.chat_message("assistant"):
             st.write(bot_response)
 
-# Start FastAPI inside Streamlit
+# ---------------------- Send Message Handling ----------------------
+if send_clicked and user_input:
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
+    st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  
+    response = requests.post("http://127.0.0.1:8000/chat/", json={"message": user_input}, timeout=10)
+    bot_response = response.json().get("response", "I didn't understand that.")
+
+    st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+    with st.chat_message("assistant"):
+        st.write(bot_response)
+
+# ---------------------- Start FastAPI Server ----------------------
 def run_fastapi():
     run(app, host="0.0.0.0", port=8000, log_level="info")
 
-# Run FastAPI in a separate thread
 threading.Thread(target=run_fastapi, daemon=True).start()
