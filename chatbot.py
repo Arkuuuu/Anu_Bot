@@ -147,30 +147,41 @@ for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.write(message["content"])
 
-# 🎙️ **Voice Input Using JavaScript (Web Speech API)**
-st.write("🎙️ Click the mic button to use voice input:")
+# 🎙️ **Toggle Voice Input with Mic Button**
+st.write("🎙️ Click the mic button to start/stop voice input:")
+
+# Mic state toggle
+if "mic_active" not in st.session_state:
+    st.session_state.mic_active = False
+
+def toggle_mic():
+    st.session_state.mic_active = not st.session_state.mic_active
+
 col1, col2 = st.columns([8, 1])
 
 with col1:
     user_input = st.chat_input("💬 Type your message here...")
 
 with col2:
-    mic_clicked = st.button("🎙️", key="mic_button")
+    mic_clicked = st.button("🎙️", key="mic_button", on_click=toggle_mic)
 
-if mic_clicked:
+# If mic is active, start listening
+if st.session_state.mic_active:
     speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
     
-    if speech_text:
-        st.session_state.chat_history.append({"role": "user", "content": speech_text})
-        try:
-            response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
-            bot_response = response.json().get("response", "I didn't understand that.")
-        except requests.exceptions.RequestException as e:
-            bot_response = f"⚠️ Error: {str(e)}"
+    # Stop listening when clicked again
+    if not st.session_state.mic_active:
+        if speech_text:
+            st.session_state.chat_history.append({"role": "user", "content": speech_text})
+            try:
+                response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
+                bot_response = response.json().get("response", "I didn't understand that.")
+            except requests.exceptions.RequestException as e:
+                bot_response = f"⚠️ Error: {str(e)}"
 
-        st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
-        with st.chat_message("assistant"):
-            st.write(bot_response)
+            st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+            with st.chat_message("assistant"):
+                st.write(bot_response)
 
 if user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
