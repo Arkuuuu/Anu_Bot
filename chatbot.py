@@ -62,8 +62,9 @@ MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModel.from_pretrained(MODEL_NAME)
 
+# Update Vision Transformer (ViT) to use `AutoImageProcessor`
 vit_model_name = "google/vit-base-patch16-224"
-feature_extractor = ViTFeatureExtractor.from_pretrained(vit_model_name)
+image_processor = AutoImageProcessor.from_pretrained(vit_model_name)
 vit_model = ViTForImageClassification.from_pretrained(vit_model_name)
 
 # Function to Generate Embeddings
@@ -78,7 +79,7 @@ def get_embedding(text):
 @app.post("/analyze_image/")
 async def analyze_image(file: UploadFile):
     image = Image.open(BytesIO(await file.read()))
-    inputs = feature_extractor(images=image, return_tensors="pt")
+    inputs = image_processor(images=image, return_tensors="pt")
     
     with torch.no_grad():
         outputs = vit_model(**inputs)
