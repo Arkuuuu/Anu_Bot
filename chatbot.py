@@ -5,14 +5,18 @@ import logging
 import streamlit as st
 import numpy as np
 import boto3
-from transformers import AutoTokenizer, AutoModel
+import threading
+import pytesseract
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from transformers import AutoTokenizer, AutoModel, AutoImageProcessor, ViTForImageClassification
 from pinecone import Pinecone
 from dotenv import load_dotenv
-from bs4 import BeautifulSoup
+from PIL import Image
 from io import BytesIO
-from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from groq import Groq
+from uvicorn import run
+from streamlit_js_eval import streamlit_js_eval
 
 # ---------------------- Load Environment Variables ----------------------
 load_dotenv()
@@ -28,131 +32,170 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 PINECONE_INDEX_NAME = "ai-multimodal-chatbot"
 
+# Validate API Keys
 if not GROQ_API_KEY or not AWS_ACCESS_KEY or not AWS_SECRET_KEY or not PINECONE_API_KEY:
-    raise ValueError("❌ ERROR: Missing API keys! Check your .env file.")
+    raise ValueError("❌ ERROR: Missing API keys! Please check your .env file or Streamlit secrets.")
 
-# ---------------------- Initialize Services ----------------------
-# ✅ Initialize Pinecone
-pc = Pinecone(api_key=PINECONE_API_KEY)
-if PINECONE_INDEX_NAME not in [index.name for index in pc.list_indexes()]:
-    pc.create_index(PINECONE_INDEX_NAME, dimension=384, metric="cosine")
-
-index = pc.Index(PINECONE_INDEX_NAME)
-
-# ✅ Initialize AWS Polly (TTS)
+# ---------------------- Initialize Clients ----------------------
+groq_client = Groq(api_key=GROQ_API_KEY)
 polly_client = boto3.client("polly", aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY, region_name=AWS_REGION)
 
-# ✅ Load Hugging Face Model for Embeddings
+# ---------------------- Initialize Pinecone ----------------------
+pc = Pinecone(api_key=PINECONE_API_KEY)
+available_indexes = [index.name for index in pc.list_indexes()]
+
+if PINECONE_INDEX_NAME in available_indexes:
+    logging.info(f"✅ Connected to Pinecone index: {PINECONE_INDEX_NAME}")
+    index = pc.Index(PINECONE_INDEX_NAME)
+else:
+    raise ValueError(f"❌ ERROR: Pinecone index '{PINECONE_INDEX_NAME}' not found. Check your Pinecone dashboard.")
+
+# ---------------------- Load Hugging Face Models ----------------------
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModel.from_pretrained(MODEL_NAME)
 
-# ---------------------- Utility Functions ----------------------
+# Updated ViT Model for Image Processing
+vit_model_name = "google/vit-base-patch16-224"
+image_processor = AutoImageProcessor.from_pretrained(vit_model_name)
+vit_model = ViTForImageClassification.from_pretrained(vit_model_name)
+
+# ---------------------- FastAPI Backend ----------------------
+app = FastAPI()
+
+# Enable CORS for frontend-backend interaction
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Function to Generate Embeddings
 def get_embedding(text):
-    """Generate text embeddings using Hugging Face model."""
     inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
     with torch.no_grad():
         outputs = model(**inputs)
-    return outputs.last_hidden_state.mean(dim=1).squeeze().tolist()
+    embedding = outputs.last_hidden_state.mean(dim=1).squeeze()
+    return embedding.tolist()
 
+# Store and Retrieve Chat History from Pinecone
 def get_past_conversations(user_query):
-    """Retrieve past chat conversations from Pinecone."""
     query_embedding = get_embedding(user_query)
     results = index.query(vector=query_embedding, top_k=5, include_metadata=True)
-    return "\n".join([match["metadata"]["text"] for match in results["matches"]])
 
-def extract_text_from_web(url):
-    """Scrape text content from a webpage."""
-    try:
-        response = requests.get(url)
-        soup = BeautifulSoup(response.text, "html.parser")
-        return "\n".join([p.get_text() for p in soup.find_all("p")]).strip()
-    except:
-        return "❌ Unable to extract text from URL."
+    past_conversations = []
+    for match in results["matches"]:
+        past_conversations.append(match["metadata"]["text"])
 
-def process_pdf(pdf_file):
-    """Extract text from uploaded PDF."""
-    pdf_loader = PyPDFLoader(BytesIO(pdf_file.read()))
-    text_data = "\n".join([doc.page_content for doc in pdf_loader.load()])
-    return RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=20).split_text(text_data)
+    return "\n".join(past_conversations)
 
-def text_to_speech(text):
-    """Convert bot response to speech using AWS Polly."""
-    response = polly_client.synthesize_speech(Text=text, OutputFormat="mp3", VoiceId="Joanna")
-    audio_stream = response["AudioStream"].read()
-    return audio_stream
+@app.post("/chat/")
+async def chat(query: dict):
+    user_input = query.get("message", "")
 
-def chat_with_ai(user_input, knowledge_source):
-    """Generate AI response based on selected knowledge source."""
-    if knowledge_source == "Chat History":
-        context = f"Previous Conversations:\n{get_past_conversations(user_input)}\n\nUser: {user_input}"
-    elif knowledge_source == "PDF" and "pdf_text" in st.session_state:
-        context = f"Document Data:\n{st.session_state['pdf_text']}\n\nUser: {user_input}"
-    elif knowledge_source == "Web URL" and "web_text" in st.session_state:
-        context = f"Web Data:\n{st.session_state['web_text']}\n\nUser: {user_input}"
-    else:
-        context = user_input
+    # Retrieve past chats from Pinecone
+    past_chats = get_past_conversations(user_input)
 
     # Get AI response
-    response = requests.post("https://api.groq.com/v1/chat/completions", json={
-        "messages": [{"role": "system", "content": "You are an AI assistant."},
-                     {"role": "user", "content": context}],
-        "model": "llama-3.3-70b-versatile"
-    }, headers={"Authorization": f"Bearer {GROQ_API_KEY}"})
-    
-    return response.json()["choices"][0]["message"]["content"]
+    chat_completion = groq_client.chat.completions.create(
+        messages=[
+            {"role": "system", "content": "You are an AI assistant."},
+            {"role": "user", "content": f"Previous Context:\n{past_chats}\nUser: {user_input}"}
+        ],
+        model="llama-3.3-70b-versatile"
+    )
+
+    response = chat_completion.choices[0].message.content
+
+    # Store both in Pinecone
+    index.upsert(vectors=[
+        {"id": f"user-{hash(user_input)}", "values": get_embedding(user_input), "metadata": {"text": user_input, "role": "user"}},
+        {"id": f"bot-{hash(response)}", "values": get_embedding(response), "metadata": {"text": response, "role": "bot"}}
+    ])
+
+    return {"response": response}
 
 # ---------------------- Streamlit UI ----------------------
-st.set_page_config(page_title="Anu AI Chatbot", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
 
-# Sidebar Configuration
-st.sidebar.title("⚙️ AI Settings")
-knowledge_source = st.sidebar.radio("Select Knowledge Source", ["Chat History", "PDF", "Web URL", "AI Model"])
+# ---------------------- Clear Chat on Refresh ----------------------
+if "chat_history" in st.session_state:
+    del st.session_state["chat_history"]
 
-# 📄 PDF Upload
-if knowledge_source == "PDF":
-    pdf_file = st.sidebar.file_uploader("📄 Upload PDF", type=["pdf"])
-    if pdf_file:
-        with st.spinner("Processing PDF..."):
-            st.session_state["pdf_text"] = "\n".join(process_pdf(pdf_file))
-        st.sidebar.success("✅ PDF Processed!")
+st.session_state.chat_history = []  # Reset chat on page refresh
 
-# 🌐 Web URL Processing
-if knowledge_source == "Web URL":
-    url = st.sidebar.text_input("🌐 Enter Website URL")
-    if st.sidebar.button("🔍 Process URL") and url:
-        with st.spinner("Extracting Web Data..."):
-            st.session_state["web_text"] = extract_text_from_web(url)
-        st.sidebar.success("✅ Web Data Extracted!")
+# Sidebar for Quick Actions
+with st.sidebar:
+    st.title("Settings")
+    st.button("📥 Download Chat")
+    st.button("🔗 Share Chat")
+    st.subheader("Quick Actions")
+    st.button("💻 Help me write code")
+    st.button("📖 Explain a concept")
+    st.button("🎨 Generate ideas")
 
-# Chat Title
-st.title("💬 Anu AI Chatbot")
+# Display Chat Messages
+st.title("💬 Anu.AI Chat")
 
-# Chat History
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+for message in st.session_state.chat_history:
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
 
-for msg in st.session_state.chat_history:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+# 🎙️ **Toggle Voice Input with Mic Button**
+st.write("🎙️ Click the mic button to start/stop voice input:")
 
-# User Input & AI Response
-user_input = st.chat_input("Type your message...")
+# Mic state toggle
+if "mic_active" not in st.session_state:
+    st.session_state.mic_active = False
+
+def toggle_mic():
+    st.session_state.mic_active = not st.session_state.mic_active
+
+col1, col2 = st.columns([8, 1])
+
+with col1:
+    user_input = st.chat_input("💬 Type your message here...")
+
+with col2:
+    mic_clicked = st.button("🎙️", key="mic_button", on_click=toggle_mic)
+
+# If mic is active, start listening
+if st.session_state.mic_active:
+    speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
+    
+    # Stop listening when clicked again
+    if not st.session_state.mic_active:
+        if speech_text:
+            st.session_state.chat_history.append({"role": "user", "content": speech_text})
+            st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  # NEW: Show "Analyzing..." while processing
+            try:
+                response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
+                bot_response = response.json().get("response", "I didn't understand that.")
+            except requests.exceptions.RequestException as e:
+                bot_response = f"⚠️ Error: {str(e)}"
+
+            st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+            with st.chat_message("assistant"):
+                st.write(bot_response)
+
 if user_input:
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
+    st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  # NEW: Show "Analyzing..." while processing
+    try:
+        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": user_input}, timeout=10)
+        bot_response = response.json().get("response", "I didn't understand that.")
+    except requests.exceptions.RequestException as e:
+        bot_response = f"⚠️ Error: {str(e)}"
 
-    with st.spinner("Thinking... 🤖"):
-        bot_reply = chat_with_ai(user_input, knowledge_source)
-
-    st.session_state.chat_history.append({"role": "assistant", "content": bot_reply})
+    st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
     with st.chat_message("assistant"):
-        st.markdown(bot_reply)
+        st.write(bot_response)
 
-# 🔊 TTS Button
-if "last_response" in st.session_state:
-    if st.sidebar.button("🔊 Listen to AI Response"):
-        audio_data = text_to_speech(st.session_state["last_response"])
-        st.audio(audio_data, format="audio/mp3")
+# Start FastAPI inside Streamlit
+def run_fastapi():
+    run(app, host="0.0.0.0", port=8000, log_level="info")
 
-st.session_state["last_response"] = bot_reply
+# Run FastAPI in a separate thread
+threading.Thread(target=run_fastapi, daemon=True).start()
