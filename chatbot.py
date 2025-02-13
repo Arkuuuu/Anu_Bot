@@ -55,11 +55,6 @@ MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModel.from_pretrained(MODEL_NAME)
 
-# Updated ViT Model for Image Processing
-vit_model_name = "google/vit-base-patch16-224"
-image_processor = AutoImageProcessor.from_pretrained(vit_model_name)
-vit_model = ViTForImageClassification.from_pretrained(vit_model_name)
-
 # ---------------------- FastAPI Backend ----------------------
 app = FastAPI()
 
@@ -121,10 +116,8 @@ async def chat(query: dict):
 st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
 
 # ---------------------- Clear Chat on Refresh ----------------------
-if "chat_history" in st.session_state:
-    del st.session_state["chat_history"]
-
-st.session_state.chat_history = []  # Reset chat on page refresh
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []  # Reset chat on page refresh
 
 # Sidebar for Quick Actions
 with st.sidebar:
@@ -137,7 +130,7 @@ with st.sidebar:
     st.button("🎨 Generate ideas")
 
 # Display Chat Messages
-st.title("💬 Anu.AI Chat")
+st.title("💬 Anu.AI")
 
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
@@ -166,20 +159,33 @@ if st.session_state.mic_active:
     speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
     
     # Stop listening when clicked again
-    if not st.session_state.mic_active:
-        if speech_text:
-            st.session_state.chat_history.append({"role": "user", "content": speech_text})
-            with st.chat_message("assistant"):
-                st.write("Analyzing... ⏳")
-            try:
-                response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
-                bot_response = response.json().get("response", "I didn't understand that.")
-            except requests.exceptions.RequestException as e:
-                bot_response = f"⚠️ Error: {str(e)}"
+    if not st.session_state.mic_active and speech_text:
+        st.session_state.chat_history.append({"role": "user", "content": speech_text})
+        with st.chat_message("assistant"):
+            st.write("Analyzing... ⏳")
+        try:
+            response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
+            bot_response = response.json().get("response", "I didn't understand that.")
+        except requests.exceptions.RequestException as e:
+            bot_response = f"⚠️ Error: {str(e)}"
 
-            st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
-            with st.chat_message("assistant"):
-                st.write(bot_response)
+        st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+        with st.chat_message("assistant"):
+            st.write(bot_response)
+
+if user_input:
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
+    with st.chat_message("assistant"):
+        st.write("Analyzing... ⏳")
+    try:
+        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": user_input}, timeout=10)
+        bot_response = response.json().get("response", "I didn't understand that.")
+    except requests.exceptions.RequestException as e:
+        bot_response = f"⚠️ Error: {str(e)}"
+
+    st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+    with st.chat_message("assistant"):
+        st.write(bot_response)
 
 # Start FastAPI inside Streamlit
 def run_fastapi():
