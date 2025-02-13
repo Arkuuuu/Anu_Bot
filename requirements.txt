@@ -12,3 +12,4 @@ beautifulsoup4
 langchain
 langchain-community
 groq
+python-multipart
