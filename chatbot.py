@@ -47,17 +47,18 @@ app = FastAPI()
 # Initialize Pinecone
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
-# Check if the Pinecone index exists before creating
-existing_indexes = pc.list_indexes()
-
-if PINECONE_INDEX_NAME not in existing_indexes:
+# Check if Pinecone index already exists
+if PINECONE_INDEX_NAME not in pc.list_indexes():
     logging.info(f"Creating Pinecone index: {PINECONE_INDEX_NAME}")
-    pc.create_index(name=PINECONE_INDEX_NAME, dimension=384, metric="cosine", spec=ServerlessSpec(cloud="aws", region="us-east-1"))
+    pc.create_index(
+        name=PINECONE_INDEX_NAME,
+        dimension=384,
+        metric="cosine",
+        spec=ServerlessSpec(cloud="aws", region="us-east-1")
+    )
     logging.info(f"✅ Pinecone index '{PINECONE_INDEX_NAME}' created successfully!")
 else:
-    logging.info(f"✅ Pinecone index '{PINECONE_INDEX_NAME}' already exists.")
-
-index = pc.Index(PINECONE_INDEX_NAME)
+    logging.info(f"✅ Pinecone index '{PINECONE_INDEX_NAME}' already exists. Skipping creation.")
 
 # Load Hugging Face Models
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
