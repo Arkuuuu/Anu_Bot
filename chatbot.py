@@ -9,16 +9,15 @@ import boto3
 import threading
 import pytesseract
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from transformers import AutoTokenizer, AutoModel, AutoImageProcessor, ViTForImageClassification
 from pinecone import Pinecone
 from dotenv import load_dotenv
 from PIL import Image
 from io import BytesIO
 from groq import Groq
-from streamlit_js_eval import streamlit_js_eval
-from fastapi.middleware.cors import CORSMiddleware
 from uvicorn import run
-import threading
+from streamlit_js_eval import streamlit_js_eval
 
 # Load environment variables
 load_dotenv()
@@ -48,7 +47,7 @@ available_indexes = [index.name for index in pc.list_indexes()]
 
 if PINECONE_INDEX_NAME in available_indexes:
     logging.info(f"✅ Connected to Pinecone index: {PINECONE_INDEX_NAME}")
-    index = pc.Index(PINECONE_INDEX_NAME, host=f"{PINECONE_INDEX_NAME}-{AWS_REGION}.pinecone.io")
+    index = pc.Index(PINECONE_INDEX_NAME)
 else:
     raise ValueError(f"❌ ERROR: Pinecone index '{PINECONE_INDEX_NAME}' not found. Check your Pinecone dashboard.")
 
