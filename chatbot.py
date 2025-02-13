@@ -123,22 +123,24 @@ st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
 # Inject CSS for Fixed Input Box at Bottom
 st.markdown("""
     <style>
-        .stTextInput {
+        .fixed-input-container {
             position: fixed;
-            bottom: 10px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 60%;
-            z-index: 999;
-            background-color: #262730;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            background: #1a1b26;
             padding: 10px;
-            border-radius: 8px;
+            z-index: 999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .stTextInput {
+            flex: 1;
+            margin-right: 10px;
         }
         .stButton {
-            position: fixed;
-            bottom: 10px;
-            right: 10%;
-            z-index: 999;
+            min-width: 50px;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -170,32 +172,31 @@ if "mic_active" not in st.session_state:
 def toggle_mic():
     st.session_state.mic_active = not st.session_state.mic_active
 
-col1, col2 = st.columns([8, 1])
+# Fixed Input Bar
+with st.container():
+    st.markdown('<div class="fixed-input-container">', unsafe_allow_html=True)
+    col1, col2 = st.columns([8, 1])
 
-with col1:
-    user_input = st.chat_input("💬 Type your message here...")
+    with col1:
+        user_input = st.chat_input("💬 Type your message here...")
 
-with col2:
-    mic_clicked = st.button("🎙️", key="mic_button", on_click=toggle_mic)
+    with col2:
+        mic_clicked = st.button("🎙️", key="mic_button", on_click=toggle_mic)
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # If mic is active, start listening
 if st.session_state.mic_active:
     speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
     
-    # Stop listening when clicked again
-    if not st.session_state.mic_active:
-        if speech_text:
-            st.session_state.chat_history.append({"role": "user", "content": speech_text})
-            st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  # NEW: Show "Analyzing..." while processing
-            try:
-                response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
-                bot_response = response.json().get("response", "I didn't understand that.")
-            except requests.exceptions.RequestException as e:
-                bot_response = f"⚠️ Error: {str(e)}"
+    if speech_text:
+        st.session_state.chat_history.append({"role": "user", "content": speech_text})
+        st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  
+        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
+        bot_response = response.json().get("response", "I didn't understand that.")
 
-            st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
-            with st.chat_message("assistant"):
-                st.write(bot_response)
+        st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+        with st.chat_message("assistant"):
+            st.write(bot_response)
 
 # Start FastAPI inside Streamlit
 def run_fastapi():
