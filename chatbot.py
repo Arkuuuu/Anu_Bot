@@ -31,7 +31,7 @@ AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-PINECONE_INDEX_NAME = "ai-multimodal-chatbot"
+PINECONE_INDEX_NAME = "chatbot-memory"
 
 # Initialize Clients
 groq_client = Groq(api_key=GROQ_API_KEY)
