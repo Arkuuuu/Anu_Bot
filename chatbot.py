@@ -17,6 +17,7 @@ from PIL import Image
 from io import BytesIO
 from groq import Groq
 from time import sleep
+from streamlit_js_eval import streamlit_js_eval
 
 # Load environment variables
 load_dotenv()
@@ -50,7 +51,7 @@ MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModel.from_pretrained(MODEL_NAME)
 
-# Updated ViT Model
+# Updated ViT Model for Image Processing
 vit_model_name = "google/vit-base-patch16-224"
 image_processor = AutoImageProcessor.from_pretrained(vit_model_name)
 vit_model = ViTForImageClassification.from_pretrained(vit_model_name)
@@ -74,40 +75,64 @@ async def analyze_image(file: UploadFile):
         class_id = torch.argmax(predictions, dim=-1).item()
     return {"prediction": vit_model.config.id2label[class_id]}
 
-# Speech-to-Text (STT) WebSocket Connection
-def record_audio(duration=5, samplerate=16000):
-    recording = sd.rec(int(duration * samplerate), samplerate=samplerate, channels=1, dtype=np.int16)
-    sd.wait()
-    return recording.tobytes()  
-
-def speech_to_text():
-    ws = websocket.WebSocket()
-    ws.connect("ws://localhost:8000/stt/")
-    
-    with st.spinner("🎙️ Listening... Speak now!"):
-        audio_data = record_audio(duration=5)
-        ws.send(audio_data)  
-        transcript = ws.recv()
-        ws.close()
-    
-    st.session_state.chat_input = transcript
+# Text-to-Speech (TTS) WebSocket
+@app.websocket("/tts/")
+async def websocket_tts(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            text_data = await websocket.receive_text()
+            response = polly_client.synthesize_speech(Text=text_data, OutputFormat="mp3", VoiceId="Joanna")
+            audio_stream = response["AudioStream"].read()
+            await websocket.send_bytes(audio_stream)
+    except WebSocketDisconnect:
+        logging.warning("TTS WebSocket disconnected.")
+    finally:
+        await websocket.close()
 
 # Streamlit UI
 st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
 st.markdown("<h1 class='center'>🤖 ANU.AI - Your Smart AI Assistant</h1>", unsafe_allow_html=True)
 
-# Chat Input
-col1, col2 = st.columns([8, 1])
-with col1:
-    user_input = st.text_input("💬 Type your message here...", key="chat_input")
+# Chat History
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-with col2:
-    if st.button("🎙️", key="mic_button", use_container_width=True):
-        threading.Thread(target=speech_to_text).start()
+# Display Chat Messages
+for message in st.session_state.chat_history:
+    role = "👤" if message["role"] == "user" else "🤖"
+    st.markdown(f"**{role} {message['role'].title()}**: {message['content']}")
+
+# 🎙️ **Voice Input Using JavaScript (Web Speech API)**
+st.write("🎙️ Click below to use voice input:")
+
+speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
+
+if speech_text:
+    st.text_input("You said:", speech_text, key="user_input")
+    st.session_state.chat_history.append({"role": "user", "content": speech_text})
+
+    # Send to chatbot backend
+    response = requests.post("http://localhost:8000/chat/", json={"message": speech_text})
+    bot_response = response.json().get("response", "I didn't understand that.")
+
+    # Display bot response
+    st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+    st.markdown(f"**🤖 ANU.AI:** {bot_response}")
+
+# Chat Input with Emoji Support
+user_input = st.text_input("💬 Type your message here...", key="chat_input")
+
+emojis = ["😊", "👍", "🎉", "🤔", "💡", "✨", "🚀", "💪"]
+selected_emoji = st.radio("Pick an emoji to react", emojis, horizontal=True)
+if selected_emoji:
+    st.session_state.chat_history.append({"role": "user", "content": selected_emoji})
 
 # Send Button
 if st.button("Send", key="send_button", use_container_width=True):
     if user_input:
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
         response = requests.post("http://localhost:8000/chat/", json={"message": user_input})
         bot_response = response.json().get("response", "I didn't understand that.")
-        st.markdown(f"**🧠 ANU.AI:** {bot_response}")
+        st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
+        st.markdown(f"**🤖 ANU.AI:** {bot_response}")
