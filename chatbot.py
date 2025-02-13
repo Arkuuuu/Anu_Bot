@@ -67,6 +67,7 @@ vit_model_name = "google/vit-base-patch16-224"
 image_processor = AutoImageProcessor.from_pretrained(vit_model_name)
 vit_model = ViTForImageClassification.from_pretrained(vit_model_name)
 
+
 # Function to Generate Embeddings
 def get_embedding(text):
     inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
