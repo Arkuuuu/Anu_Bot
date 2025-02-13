@@ -186,7 +186,7 @@ if st.session_state.mic_active:
     if not st.session_state.mic_active:
         if speech_text:
             st.session_state.chat_history.append({"role": "user", "content": speech_text})
-            st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  # Show "Analyzing..." while processing
+            st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  # NEW: Show "Analyzing..." while processing
             try:
                 response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
                 bot_response = response.json().get("response", "I didn't understand that.")
@@ -196,19 +196,6 @@ if st.session_state.mic_active:
             st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
             with st.chat_message("assistant"):
                 st.write(bot_response)
-
-if user_input:
-    st.session_state.chat_history.append({"role": "user", "content": user_input})
-    st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  # Show "Analyzing..." while processing
-    try:
-        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": user_input}, timeout=10)
-        bot_response = response.json().get("response", "I didn't understand that.")
-    except requests.exceptions.RequestException as e:
-        bot_response = f"⚠️ Error: {str(e)}"
-
-    st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
-    with st.chat_message("assistant"):
-        st.write(bot_response)
 
 # Start FastAPI inside Streamlit
 def run_fastapi():
