@@ -13,3 +13,4 @@ langchain
 langchain-community
 groq
 python-multipart
+websocket-client
