@@ -8,6 +8,7 @@ import numpy as np
 import boto3
 import websocket
 import threading
+import pytesseract
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile
 from transformers import AutoTokenizer, AutoModel, AutoImageProcessor, ViTForImageClassification
 from pinecone import Pinecone, ServerlessSpec
@@ -63,6 +64,11 @@ def get_embedding(text):
     embedding = outputs.last_hidden_state.mean(dim=1).squeeze()
     return embedding.tolist()
 
+# OCR Function for Text Extraction from Images
+def extract_text_from_image(image):
+    text = pytesseract.image_to_string(image)
+    return text.strip()
+
 # Function to Process Images
 @app.post("/analyze_image/")
 async def analyze_image(file: UploadFile):
@@ -72,7 +78,13 @@ async def analyze_image(file: UploadFile):
         outputs = vit_model(**inputs)
         predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
         class_id = torch.argmax(predictions, dim=-1).item()
-    return {"prediction": vit_model.config.id2label[class_id]}
+    
+    extracted_text = extract_text_from_image(image)
+
+    return {
+        "prediction": vit_model.config.id2label[class_id],
+        "extracted_text": extracted_text
+    }
 
 # Text-to-Speech (TTS) WebSocket
 @app.websocket("/tts/")
@@ -89,7 +101,7 @@ async def websocket_tts(websocket: WebSocket):
     finally:
         await websocket.close()
 
-# Streamlit UI
+# -----------------------------------------------------------------Streamlit UI---------------------------------------------------------------
 st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
 st.markdown("<h1 class='center'>🤖 ANU.AI - Your Smart AI Assistant</h1>", unsafe_allow_html=True)
 
@@ -118,6 +130,15 @@ if speech_text:
     # Display bot response
     st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
     st.markdown(f"**🤖 ANU.AI:** {bot_response}")
+
+# Image Upload for OCR & Object Detection
+uploaded_file = st.file_uploader("📸 Upload an image for analysis", type=["jpg", "png"])
+if uploaded_file:
+    image_bytes = uploaded_file.getvalue()
+    response = requests.post("http://localhost:8000/analyze_image/", files={"file": image_bytes})
+    result = response.json()
+    st.image(uploaded_file, caption=f"Detected: {result['prediction']}", use_column_width=True)
+    st.markdown(f"📝 Extracted Text: `{result['extracted_text']}`")
 
 # Chat Input with Emoji Support
 user_input = st.text_input("💬 Type your message here...", key="chat_input")
