@@ -1,22 +1,17 @@
 import os
 import torch
-import requests
 import logging
-import streamlit as st
-import numpy as np
-import boto3
 import threading
-import pytesseract
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile
+import requests
+import streamlit as st
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from transformers import AutoTokenizer, AutoModel, AutoImageProcessor, ViTForImageClassification
+from transformers import AutoTokenizer, AutoModel
 from pinecone import Pinecone
 from dotenv import load_dotenv
-from PIL import Image
-from io import BytesIO
 from groq import Groq
-from uvicorn import run
-from streamlit_js_eval import streamlit_js_eval
+import uvicorn
+import socket
 
 # ---------------------- Load Environment Variables ----------------------
 load_dotenv()
@@ -26,39 +21,33 @@ logging.basicConfig(level=logging.INFO)
 
 # ---------------------- API Keys ----------------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY")
-AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 PINECONE_INDEX_NAME = "ai-multimodal-chatbot"
 
 # Validate API Keys
-if not GROQ_API_KEY or not AWS_ACCESS_KEY or not AWS_SECRET_KEY or not PINECONE_API_KEY:
-    raise ValueError("❌ ERROR: Missing API keys! Please check your .env file or Streamlit secrets.")
+if not GROQ_API_KEY or not PINECONE_API_KEY:
+    raise ValueError("❌ ERROR: Missing API keys! Check your .env file.")
 
 # ---------------------- Initialize Clients ----------------------
 groq_client = Groq(api_key=GROQ_API_KEY)
-polly_client = boto3.client("polly", aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY, region_name=AWS_REGION)
 
-# ---------------------- Initialize Pinecone ----------------------
+# Initialize Pinecone
 pc = Pinecone(api_key=PINECONE_API_KEY)
-available_indexes = [index.name for index in pc.list_indexes()]
+index = pc.Index(PINECONE_INDEX_NAME) if PINECONE_INDEX_NAME in [i.name for i in pc.list_indexes()] else None
 
-if PINECONE_INDEX_NAME in available_indexes:
-    logging.info(f"✅ Connected to Pinecone index: {PINECONE_INDEX_NAME}")
-    index = pc.Index(PINECONE_INDEX_NAME)
-else:
-    raise ValueError(f"❌ ERROR: Pinecone index '{PINECONE_INDEX_NAME}' not found. Check your Pinecone dashboard.")
+if index is None:
+    raise ValueError(f"❌ ERROR: Pinecone index '{PINECONE_INDEX_NAME}' not found.")
 
 # ---------------------- Load Hugging Face Models ----------------------
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModel.from_pretrained(MODEL_NAME)
 
-# Updated ViT Model for Image Processing
-vit_model_name = "google/vit-base-patch16-224"
-image_processor = AutoImageProcessor.from_pretrained(vit_model_name)
-vit_model = ViTForImageClassification.from_pretrained(vit_model_name)
+@torch.no_grad()
+def load_models():
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModel.from_pretrained(MODEL_NAME)
+    return tokenizer, model
+
+tokenizer, model = load_models()
 
 # ---------------------- FastAPI Backend ----------------------
 app = FastAPI()
@@ -66,7 +55,7 @@ app = FastAPI()
 # Enable CORS for frontend-backend interaction
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -75,21 +64,14 @@ app.add_middleware(
 # Function to Generate Embeddings
 def get_embedding(text):
     inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-    with torch.no_grad():
-        outputs = model(**inputs)
-    embedding = outputs.last_hidden_state.mean(dim=1).squeeze()
-    return embedding.tolist()
+    outputs = model(**inputs)
+    return outputs.last_hidden_state.mean(dim=1).squeeze().tolist()
 
-# Store and Retrieve Chat History from Pinecone
+# Retrieve past chat history from Pinecone
 def get_past_conversations(user_query):
     query_embedding = get_embedding(user_query)
     results = index.query(vector=query_embedding, top_k=5, include_metadata=True)
-
-    past_conversations = []
-    for match in results["matches"]:
-        past_conversations.append(match["metadata"]["text"])
-
-    return "\n".join(past_conversations)
+    return "\n".join([match["metadata"]["text"] for match in results["matches"]])
 
 @app.post("/chat/")
 async def chat(query: dict):
@@ -109,93 +91,55 @@ async def chat(query: dict):
 
     response = chat_completion.choices[0].message.content
 
-    # Store both in Pinecone
-    index.upsert(vectors=[
-        {"id": f"user-{hash(user_input)}", "values": get_embedding(user_input), "metadata": {"text": user_input, "role": "user"}},
-        {"id": f"bot-{hash(response)}", "values": get_embedding(response), "metadata": {"text": response, "role": "bot"}}
-    ])
+    # Store in Pinecone with optimized frequency
+    if len(user_input.split()) > 2:  # Avoid storing very short inputs
+        index.upsert(vectors=[
+            {"id": f"user-{hash(user_input)}", "values": get_embedding(user_input), "metadata": {"text": user_input, "role": "user"}},
+            {"id": f"bot-{hash(response)}", "values": get_embedding(response), "metadata": {"text": response, "role": "bot"}}
+        ])
 
     return {"response": response}
+
+# ---------------------- Start FastAPI in a Separate Thread ----------------------
+def find_available_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+port = find_available_port()
+
+def run_backend():
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+
+threading.Thread(target=run_backend, daemon=True).start()
 
 # ---------------------- Streamlit UI ----------------------
 st.set_page_config(page_title="ANU.AI", page_icon="🤖", layout="wide")
 
-# ---------------------- Clear Chat on Refresh ----------------------
-if "chat_history" in st.session_state:
-    del st.session_state["chat_history"]
-
-st.session_state.chat_history = []  # Reset chat on page refresh
-
-# Sidebar for Quick Actions
-with st.sidebar:
-    st.title("Settings")
-    st.button("📥 Download Chat")
-    st.button("🔗 Share Chat")
-    st.subheader("Quick Actions")
-    st.button("💻 Help me write code")
-    st.button("📖 Explain a concept")
-    st.button("🎨 Generate ideas")
-
-# Display Chat Messages
 st.title("💬 Anu.AI Chat")
 
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# Chat UI
 for message in st.session_state.chat_history:
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
+    role_class = "user-message" if message["role"] == "user" else "bot-message"
+    st.markdown(f'<div class="{role_class}"><strong>{message["content"]}</strong></div>', unsafe_allow_html=True)
 
-# 🎙️ **Toggle Voice Input with Mic Button**
-st.write("🎙️ Click the mic button to start/stop voice input:")
-
-# Mic state toggle
-if "mic_active" not in st.session_state:
-    st.session_state.mic_active = False
-
-def toggle_mic():
-    st.session_state.mic_active = not st.session_state.mic_active
-
-col1, col2 = st.columns([8, 1])
-
-with col1:
-    user_input = st.chat_input("💬 Type your message here...")
-
-with col2:
-    mic_clicked = st.button("🎙️", key="mic_button", on_click=toggle_mic)
-
-# If mic is active, start listening
-if st.session_state.mic_active:
-    speech_text = streamlit_js_eval(js_expressions="window.navigator.mediaDevices.getUserMedia({ audio: true });", key="speech_recognition")
-    
-    # Stop listening when clicked again
-    if not st.session_state.mic_active:
-        if speech_text:
-            st.session_state.chat_history.append({"role": "user", "content": speech_text})
-            st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  # NEW: Show "Analyzing..." while processing
-            try:
-                response = requests.post("http://127.0.0.1:8000/chat/", json={"message": speech_text}, timeout=10)
-                bot_response = response.json().get("response", "I didn't understand that.")
-            except requests.exceptions.RequestException as e:
-                bot_response = f"⚠️ Error: {str(e)}"
-
-            st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
-            with st.chat_message("assistant"):
-                st.write(bot_response)
+user_input = st.chat_input("💬 Type your message here...")
 
 if user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
-    st.markdown("🤖 **ANU.AI is analyzing... ⏳**")  # NEW: Show "Analyzing..." while processing
+
+    # Typing effect
+    st.markdown('<div class="typing">🤖 ANU.AI is typing... ⏳</div>', unsafe_allow_html=True)
+
     try:
-        response = requests.post("http://127.0.0.1:8000/chat/", json={"message": user_input}, timeout=10)
+        API_URL = f"http://localhost:{port}/chat/"
+        response = requests.post(API_URL, json={"message": user_input}, timeout=10)
         bot_response = response.json().get("response", "I didn't understand that.")
     except requests.exceptions.RequestException as e:
         bot_response = f"⚠️ Error: {str(e)}"
 
     st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
-    with st.chat_message("assistant"):
-        st.write(bot_response)
-
-# Start FastAPI inside Streamlit
-def run_fastapi():
-    run(app, host="0.0.0.0", port=8000, log_level="info")
-
-# Run FastAPI in a separate thread
-threading.Thread(target=run_fastapi, daemon=True).start()
+    st.markdown(f'<div class="bot-message"><strong>{bot_response}</strong></div>', unsafe_allow_html=True)
