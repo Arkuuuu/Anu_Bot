@@ -4,6 +4,7 @@ import logging
 import threading
 import requests
 import streamlit as st
+import boto3
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from transformers import AutoTokenizer, AutoModel
@@ -12,6 +13,9 @@ from dotenv import load_dotenv
 from groq import Groq
 import uvicorn
 import socket
+from io import BytesIO
+import base64
+import time
 
 # ---------------------- Load Environment Variables ----------------------
 load_dotenv()
@@ -19,19 +23,23 @@ load_dotenv()
 # ---------------------- Setup Logging ----------------------
 logging.basicConfig(level=logging.INFO)
 
-# ---------------------- API Keys ----------------------
+# ---------------------- API Keys & AWS Configuration ----------------------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY")
+AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 PINECONE_INDEX_NAME = "ai-multimodal-chatbot"
 
 # Validate API Keys
-if not GROQ_API_KEY or not PINECONE_API_KEY:
+if not GROQ_API_KEY or not PINECONE_API_KEY or not AWS_ACCESS_KEY or not AWS_SECRET_KEY:
     raise ValueError("❌ ERROR: Missing API keys! Check your .env file.")
 
-# ---------------------- Initialize Clients ----------------------
-groq_client = Groq(api_key=GROQ_API_KEY)
+# ---------------------- Initialize AWS Clients ----------------------
+polly_client = boto3.client("polly", aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY, region_name=AWS_REGION)
+transcribe_client = boto3.client("transcribe", aws_access_key_id=AWS_ACCESS_KEY, aws_secret_access_key=AWS_SECRET_KEY, region_name=AWS_REGION)
 
-# Initialize Pinecone
+# ---------------------- Initialize Pinecone ----------------------
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME) if PINECONE_INDEX_NAME in [i.name for i in pc.list_indexes()] else None
 
@@ -100,6 +108,34 @@ async def chat(query: dict):
 
     return {"response": response}
 
+# ---------------------- AWS Polly (Text-to-Speech) ----------------------
+def text_to_speech(text):
+    response = polly_client.synthesize_speech(Text=text, OutputFormat="mp3", VoiceId="Joanna")
+    return response["AudioStream"].read()
+
+# ---------------------- AWS Transcribe (Speech-to-Text) ----------------------
+def speech_to_text(audio_file):
+    job_name = f"transcription-{int(time.time())}"
+    transcribe_client.start_transcription_job(
+        TranscriptionJobName=job_name,
+        Media={"MediaFileUri": audio_file},
+        MediaFormat="mp3",
+        LanguageCode="en-US"
+    )
+    
+    # Wait for transcription to complete
+    while True:
+        status = transcribe_client.get_transcription_job(TranscriptionJobName=job_name)
+        if status["TranscriptionJob"]["TranscriptionJobStatus"] in ["COMPLETED", "FAILED"]:
+            break
+        time.sleep(2)
+    
+    if status["TranscriptionJob"]["TranscriptionJobStatus"] == "COMPLETED":
+        transcript_url = status["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
+        transcript_text = requests.get(transcript_url).json()["results"]["transcripts"][0]["transcript"]
+        return transcript_text
+    return None
+
 # ---------------------- Start FastAPI in a Separate Thread ----------------------
 def find_available_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -121,25 +157,27 @@ st.title("💬 Anu.AI Chat")
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# Chat UI
-for message in st.session_state.chat_history:
-    role_class = "user-message" if message["role"] == "user" else "bot-message"
-    st.markdown(f'<div class="{role_class}"><strong>{message["content"]}</strong></div>', unsafe_allow_html=True)
+user_input = st.chat_input("💬 Type your message or use voice input...")
 
-user_input = st.chat_input("💬 Type your message here...")
+if st.button("🎙️ Speak"):
+    audio_file = st.file_uploader("Upload your voice (MP3 only)", type=["mp3"])
+    if audio_file:
+        transcript_text = speech_to_text(audio_file)
+        if transcript_text:
+            st.write(f"🗣️ You said: {transcript_text}")
+            user_input = transcript_text
 
 if user_input:
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
-    # Typing effect
-    st.markdown('<div class="typing">🤖 ANU.AI is typing... ⏳</div>', unsafe_allow_html=True)
-
-    try:
-        API_URL = f"http://localhost:{port}/chat/"
-        response = requests.post(API_URL, json={"message": user_input}, timeout=10)
-        bot_response = response.json().get("response", "I didn't understand that.")
-    except requests.exceptions.RequestException as e:
-        bot_response = f"⚠️ Error: {str(e)}"
+    API_URL = f"http://localhost:{port}/chat/"
+    response = requests.post(API_URL, json={"message": user_input}, timeout=10)
+    bot_response = response.json().get("response", "I didn't understand that.")
 
     st.session_state.chat_history.append({"role": "assistant", "content": bot_response})
-    st.markdown(f'<div class="bot-message"><strong>{bot_response}</strong></div>', unsafe_allow_html=True)
+    st.write(f"🤖 {bot_response}")
+
+    if st.button("🔊 Listen"):
+        audio_data = text_to_speech(bot_response)
+        b64 = base64.b64encode(audio_data).decode()
+        st.audio(f"data:audio/mp3;base64,{b64}", format="audio/mp3")
